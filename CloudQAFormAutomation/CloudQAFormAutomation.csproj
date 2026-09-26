@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>CloudQAFormAutomation</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Selenium core. As of 4.6+, Selenium ships its own Selenium Manager,
+         which auto-detects the installed Chrome version and downloads the
+         matching chromedriver binary at runtime - no separate pinned
+         ChromeDriver NuGet package needed, and no version-mismatch risk
+         if the evaluator's Chrome differs from what was pinned here. -->
+    <PackageReference Include="Selenium.WebDriver" Version="4.25.0" />
+    <PackageReference Include="Selenium.Support" Version="4.25.0" />
+    <PackageReference Include="DotNetSeleniumExtras.WaitHelpers" Version="3.11.0" />
+  </ItemGroup>
+
+</Project>
