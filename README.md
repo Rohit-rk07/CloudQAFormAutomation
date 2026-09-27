@@ -1,14 +1,21 @@
 # CloudQA Automation Practice Form — Resilient Selenium Automation (C#)
 
-Automates three fields on the [CloudQA Automation Practice Form](https://app.cloudqa.io/home/AutomationPracticeForm):
+Automates four fields on the [CloudQA Automation Practice Form](https://app.cloudqa.io/home/AutomationPracticeForm),
+plus a fifth, separate demonstration for the assessment's optional bonus section:
 
-| Field         | Type          | Action performed                              |
-|---------------|---------------|------------------------------------------------|
-| First Name    | text input    | Enter text, then validate the value stuck      |
-| Gender        | radio buttons | Select "Male", then validate it's checked      |
-| Country       | select dropdown | Select "India", then validate it's chosen    |
+| # | Field      | Type                                  | Action performed                                                        |
+|---|------------|----------------------------------------|--------------------------------------------------------------------------|
+| 1 | First Name | text input                             | Enter text, then validate the value stuck                                |
+| 2 | Gender     | radio buttons                          | Select "Male", then validate it's checked                                |
+| 3 | Country    | custom autocomplete widget (not a real `<select>`) | Type "India", click the matching suggestion, validate the field shows it |
+| 4 | State      | native `<select>` dropdown             | Select the first real option, validate it's chosen                       |
+| 5 | *(bonus)*  | — | Live demo: mutate a field's id/name/class and move it elsewhere in the DOM at runtime, then confirm the locator still finds it |
 
-The focus of this assessment isn't the three interactions themselves — it's
+The task only asks for three fields; I automated four (a fourth field, State, was
+added to show the same locator code handling a second, structurally different
+widget type) plus the optional bonus demo.
+
+The focus of this assessment isn't the interactions themselves — it's
 **how the elements are found**. See [Locator Strategy](#locator-strategy--resilience) below.
 
 ---
@@ -18,7 +25,7 @@ The focus of this assessment isn't the three interactions themselves — it's
 ```
 CloudQAFormAutomation/
 ├── CloudQAFormAutomation.csproj      # project + NuGet dependencies
-├── Program.cs                        # entry point; drives the 3 field tests
+├── Program.cs                        # entry point; drives all 5 tests
 ├── ResilientElementLocator.cs        # the resilient locator engine (core of the task)
 └── README.md
 ```
@@ -54,7 +61,7 @@ dotnet run
 ```
 
 This opens a visible Chrome window, navigates to the form, and runs all
-three field tests, printing a PASS/FAIL line per field plus a summary.
+five tests, printing a PASS/FAIL line per test plus a summary.
 
 To run headless (e.g. in CI):
 
@@ -67,22 +74,41 @@ dotnet run -- --headless
 ```
   [locator] 'field labelled 'First Name'' resolved via: label[for] pointing at a input (label text = 'First Name')
 [PASS] First Name (text input): Entered 'Rohit' and confirmed the field's value attribute matches.
-  [locator] 'choice input for option 'Male'' resolved via: label[for] radio/checkbox for option 'Male'
+  [locator] 'choice input for option 'Male'' resolved via: radio/checkbox immediately followed by text 'Male'  (took first of 2 matches)
 [PASS] Gender (radio button): Selected the 'Male' option and confirmed it is checked.
-  [locator] 'field labelled 'Country'' resolved via: label[for] pointing at a select (label text = 'Country')
-[PASS] Country (dropdown): Selected 'India' and confirmed it is now the chosen option.
+  [locator] 'field labelled 'Country'' resolved via: label[for] pointing at a * (label text = 'Country')
+[PASS] Country (dropdown): Typed 'India' into the autocomplete field, clicked the matching suggestion (found via its hidden value-holding input), and confirmed the field now shows it.
+  [locator] 'field labelled 'State'' resolved via: label[for] pointing at a select (label text = 'State')
+[PASS] State (native dropdown, bonus): Selected 'Afganistan' from the native State <select> and confirmed it is now chosen.
+  [locator] 'field labelled 'First Name'' resolved via: label[for] pointing at a input (label text = 'First Name')
+  [locator] 'field labelled 'First Name'' resolved via: label containing text, then nearest following input
+[PASS] BONUS: locator survives live id/class/DOM-position mutation: After removing the original label, randomizing id/name/class (new id 'xmnmgshrn'), and moving the element into a brand-new <div> at the end of <body>, FindByLabel('First Name') still resolved to the SAME element (fingerprint confirmed intact).
 
 ==================== SUMMARY ====================
 PASS   First Name (text input)
 PASS   Gender (radio button)
 PASS   Country (dropdown)
-3/3 field tests passed.
+PASS   State (native dropdown, bonus)
+PASS   BONUS: locator survives live id/class/DOM-position mutation
+5/5 field tests passed.
 ==================================================
 ```
+
+(Chrome/Selenium/GCM diagnostic noise from Chrome itself — e.g.
+`update_service_dialer_win.cc`, `registration_request.cc` lines — may also
+appear in the console; these come from the Chrome binary, not this project,
+and don't affect the test results.)
 
 The `[locator]` lines are printed for every field so you can see, at
 runtime, exactly which fallback strategy resolved each element — useful
 both for debugging and for demonstrating the resilience behaviour below.
+Notice the second `[locator]` line for the bonus test: the *first* call
+resolves normally (`label[for]`), and the *second* call — made only after
+the DOM has been mutated — falls through to a weaker fallback strategy
+(`label containing text, then nearest following input`), which is exactly
+the expected, correct behaviour: the strong strategies should fail once
+the id/DOM structure is destroyed, and a weaker-but-still-content-based
+strategy should pick up the slack.
 
 ---
 
@@ -132,6 +158,18 @@ element**. If a strategy times out (element not found that way), it's
 silently skipped and the next one is tried — the calling code never needs
 to know which strategy actually worked.
 
+### Handling a non-standard widget: Country
+The Country field isn't a native `<select>` on this page — it's a
+hand-rolled JavaScript autocomplete. There are no `<option>` elements to
+select from, and suggestion rows have no standardized markup (`<li>`,
+`role="option"`, etc. don't exist here) to key off. Rather than guessing
+at row structure, the code locates the field itself via the normal label
+strategies (which don't care what tag the field turns out to be), types
+into it, and then waits for a suggestion row identifiable by content: each
+row contains a hidden `<input type="hidden" value="India">` carrying the
+real value — content the widget itself guarantees, unlike an id or class
+a developer happened to choose.
+
 ### Why this satisfies each resilience requirement
 
 | Requirement in the task                          | How it's handled |
@@ -143,16 +181,40 @@ to know which strategy actually worked.
 | Multiple elements share similar attributes          | Every strategy first narrows by *text content specific to that field* (its exact label or option text) before touching the DOM relationship, so a generic `class="form-control"` shared by ten inputs is never the deciding factor. |
 
 ### Bonus: identifying an element when most attributes have changed
-This is effectively the normal case for the locator, not a special mode.
-As long as **one** semantic signal survives — the label text, the
-placeholder, the aria-label, or just the fact that the field type is an
-`<input>`/`<select>` sitting next to recognizable text — one of the six
-strategies will still resolve it, because each strategy depends on only a
-*single* signal rather than a specific combination of id+class+position.
-If literally every one of those signals were replaced at once (e.g. the
-label text itself changed language and no placeholder/aria-label exists),
-no purely static approach can succeed without additional context — see
-Limitations.
+This is demonstrated live, not just argued for. `Program.cs` runs a 5th,
+clearly-separate test — `RunLocatorResilienceDemo` — that is **not** a test
+of the CloudQA form's own behaviour. Instead it:
+
+1. Locates the First Name field the normal way and types a unique
+   fingerprint value into it.
+2. Runs a JavaScript snippet that:
+   - removes the *original* `<label>` (captured via the input's own
+     `.labels` association before anything else changes), so it can't be
+     matched again once the input has moved away from it;
+   - randomizes the element's `id`, `name`, and `class` to garbage;
+   - physically moves the input into a brand-new `<div>` appended at the
+     end of `<body>` — destroying its attributes, its position, its DOM
+     structure, and any XPath that encoded its old location — while
+     planting a freshly-created `<label>` carrying the same label text
+     immediately before it in its new location.
+
+   This mirrors how a real redesign usually keeps the *visible copy* of a
+   label next to its control even while completely rewriting the
+   surrounding markup — and removing the stale original label matters:
+   without that step, the locator's weaker fallback strategy could latch
+   onto the leftover label instead and walk forward to the wrong,
+   unrelated input, producing a false pass rather than a real one.
+3. Calls `FindByLabel("First Name")` again — the exact same call every
+   other test uses — and confirms it resolved to the **same element** by
+   reading the fingerprint value (and the freshly-randomized id) back out.
+
+This works because each of the six strategies depends on only a *single*
+signal rather than a specific combination of id+class+position, so as
+long as one signal (here, a label with matching text, adjacent in
+document order) survives, one strategy still resolves it. If literally
+every signal were destroyed at once — including the label text itself —
+no purely static approach could succeed without fuzzy/semantic matching;
+see Limitations.
 
 ---
 
@@ -174,9 +236,16 @@ Limitations.
   one visible element (which the field-specific text narrowing is designed
   to avoid), the locator takes the first and logs how many it found, so
   it's easy to spot ambiguity.
+- **The State field's option text is data-dependent.** On the live page,
+  the "State" dropdown actually contains a list of country names (a quirk
+  of this particular practice page, not something this project controls),
+  including at least one misspelling ("Afganistan"). Rather than hard-code
+  an expected value, the test reads whichever option text is actually
+  first in the list (skipping an obvious placeholder such as
+  `-- Select Country --`) and asserts against that, so it stays correct
+  regardless of exactly what the options are.
 - **No CAPTCHA/auth handling** — the practice form doesn't require login,
   so none is implemented.
 - **Timeouts** are short (5s per strategy, 10s for initial page load) to
   keep the demo fast; increase `timeoutSeconds` in
   `ResilientElementLocator`'s constructor for slower environments/CI.
-"# CloudQAFormAutomation" 
