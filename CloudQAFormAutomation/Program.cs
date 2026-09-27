@@ -17,6 +17,13 @@ namespace CloudQAFormAutomation
     ///                    works cleanly on a second, structurally distinct
     ///                    native dropdown)
     ///
+    /// ...and then runs one additional, clearly-separate bonus test,
+    /// <see cref="RunLocatorResilienceDemo"/>, which is not a test of the
+    /// CloudQA form itself but a live demonstration that the locator can
+    /// still find a field after its id/name/class are randomized and it is
+    /// moved to a brand-new location in the DOM at runtime - the scenario
+    /// described in the assessment's optional bonus section.
+    ///
     /// Every element is found through <see cref="ResilientElementLocator"/>,
     /// which locates fields by their visible label / option text rather than
     /// by id, name, class, XPath position or DOM order - see that file, and
@@ -52,6 +59,7 @@ namespace CloudQAFormAutomation
                 RunGenderTest(driver, locator, results);
                 RunCountryTest(driver, locator, results);
                 RunStateTest(locator, results);
+                RunLocatorResilienceDemo(driver, locator, results);
             }
             catch (Exception ex)
             {
@@ -177,7 +185,7 @@ namespace CloudQAFormAutomation
                     countryField.SendKeys(desiredCountry);
 
                     var wait = new WebDriverWait(driver, TimeSpan.FromSeconds(5));
-                    IWebElement hiddenValueHolder = wait.Until(d =>
+                    IWebElement? foundHiddenInput = wait.Until<IWebElement?>(d =>
                     {
                         var candidates = d.FindElements(By.XPath(
                                 "//div[contains(concat(' ',normalize-space(@class),' '),' autocomplete-items ')]" +
@@ -187,6 +195,12 @@ namespace CloudQAFormAutomation
                             .ToList();
                         return candidates.Count > 0 ? candidates[0] : null;
                     });
+                    // WebDriverWait keeps polling as long as the lambda returns null, so by the
+                    // time .Until returns normally this is guaranteed non-null; this is just
+                    // making that guarantee explicit for the nullable-reference compiler.
+                    IWebElement hiddenValueHolder = foundHiddenInput
+                        ?? throw new NoSuchElementException(
+                            $"Autocomplete suggestion for '{desiredCountry}' was never found within the wait window.");
 
                     // Click the visible row wrapping the hidden input (that's
                     // what the widget's own click handler listens on).
@@ -213,11 +227,10 @@ namespace CloudQAFormAutomation
         // distinct from Country's widget. Rather than hard-coding an
         // expected option text (this page's "State" list is a quirky mix
         // of country-like names, not real US/India states), the test picks
-        // the first real option (index 1, skipping the usual blank
-        // placeholder at index 0), selects it, and confirms the select's
-        // chosen value now matches that option's own text. That keeps the
-        // test content-based rather than tied to a specific label value
-        // that could differ per environment.
+        // the first real option (skipping a leading placeholder), selects
+        // it, and confirms the select's chosen value now matches that
+        // option's own text. That keeps the test content-based rather than
+        // tied to a specific label value that could differ per environment.
         // ---------------------------------------------------------------
         private static void RunStateTest(ResilientElementLocator locator, TestResultCollector results)
         {
@@ -228,8 +241,27 @@ namespace CloudQAFormAutomation
                 var select = new SelectElement(stateField);
 
                 var options = select.Options.Where(o => o.Enabled).ToList();
-                // Skip a leading blank/placeholder option ("-- Select --" etc.) if present.
-                int indexToPick = (options.Count > 1 && string.IsNullOrWhiteSpace(options[0].Text)) ? 1 : 0;
+
+                // Skip a leading placeholder option. Placeholders on real sites take
+                // many shapes ("-- Select --", "Choose an option", or simply an empty
+                // value="" attribute even when the visible text isn't blank) so check
+                // several signals rather than assuming blank text specifically.
+                int indexToPick = 0;
+                for (int i = 0; i < options.Count; i++)
+                {
+                    string val = options[i].GetAttribute("value") ?? string.Empty;
+                    string text = options[i].Text.Trim();
+                    bool looksLikePlaceholder =
+                        string.IsNullOrWhiteSpace(val) ||
+                        text.StartsWith("--") ||
+                        text.Contains("Select", StringComparison.OrdinalIgnoreCase);
+
+                    if (!looksLikePlaceholder)
+                    {
+                        indexToPick = i;
+                        break;
+                    }
+                }
                 string expected = options[indexToPick].Text.Trim();
 
                 select.SelectByText(expected);
@@ -244,6 +276,104 @@ namespace CloudQAFormAutomation
             catch (Exception ex)
             {
                 results.Record(testName, false, $"Locator/interaction failed: {ex.Message}");
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // BONUS (optional in the brief): a live demonstration, not a form
+        // test. It proves the locator can still find a field after almost
+        // everything about it changes at runtime - id, name, class, and its
+        // position/parent in the DOM - as long as ONE semantic signal
+        // survives: here, a real <label> element carrying the field's label
+        // text, planted right next to it in its new location. That mirrors
+        // how a real redesign usually keeps the *visible copy* next to a
+        // control even while completely rewriting its markup.
+        //
+        // The ORIGINAL <label> is deliberately removed as part of the
+        // mutation (not just left behind): if it stayed in place, the
+        // locator's "label containing text -> nearest following control"
+        // fallback would still match it and then walk forward to whatever
+        // input happens to sit next in the document (a different field
+        // entirely), producing a false pass. Removing it means the only
+        // "First Name" label left anywhere on the page is the new one
+        // planted beside the relocated input - so a pass here proves the
+        // locator followed live-changed content, not stale leftover markup.
+        //
+        // Proof of "it's still the SAME element", not just "it found an
+        // element": a unique fingerprint value is typed into the field
+        // BEFORE the mutation; after re-locating it from scratch with the
+        // exact same FindByLabel(...) call used everywhere else, the test
+        // confirms that fingerprint (and the freshly-randomized id) both
+        // read back correctly from whatever element was found.
+        // ---------------------------------------------------------------
+        private static void RunLocatorResilienceDemo(IWebDriver driver, ResilientElementLocator locator, TestResultCollector results)
+        {
+            const string testName = "BONUS: locator survives live id/class/DOM-position mutation";
+            const string fieldLabel = "First Name";
+            string fingerprint = $"ResilienceDemo-{Guid.NewGuid():N}".Substring(0, 24);
+
+            try
+            {
+                // 1. Locate the field the normal way and stamp it with a unique
+                //    fingerprint value we can check for after the mutation.
+                IWebElement original = locator.FindByLabel(fieldLabel, preferredTag: "input");
+                original.Clear();
+                original.SendKeys(fingerprint);
+
+                // 2. Mutate the live DOM:
+                //    - remove the ORIGINAL <label> (captured via the input's own
+                //      .labels association, which still works before the id changes)
+                //      so it can't produce a stale match once the input moves away;
+                //    - randomize id/name/class (destroys every attribute-based locator);
+                //    - physically relocate the input into a brand-new <div> appended
+                //      at the end of <body> (destroys position, DOM structure, and any
+                //      XPath encoding its old location), with a freshly-created real
+                //      <label> (not just any text node) holding the same label text
+                //      placed immediately before it as its sole remaining identity clue.
+                const string js = @"
+                    const input = arguments[0];
+                    const labelText = arguments[1];
+                    const rand = () => 'x' + Math.random().toString(36).slice(2, 10);
+
+                    let originalLabel = (input.labels && input.labels.length > 0)
+                        ? input.labels[0]
+                        : document.querySelector('label[for=""' + input.id + '""]');
+                    if (originalLabel) { originalLabel.remove(); }
+
+                    input.id = rand();
+                    input.name = rand();
+                    input.className = rand();
+
+                    const newHome = document.createElement('div');
+                    newHome.id = rand();
+                    const marker = document.createElement('label');
+                    marker.textContent = labelText;
+                    newHome.appendChild(marker);
+                    newHome.appendChild(input);
+                    document.body.appendChild(newHome);
+
+                    return input.id;
+                ";
+                string newId = (string)((IJavaScriptExecutor)driver).ExecuteScript(js, original, fieldLabel);
+
+                // 3. Re-locate from scratch - the exact same call every other test
+                //    uses, no special-cased "demo mode" - and confirm it resolved
+                //    to the SAME element via the fingerprint written in step 1.
+                IWebElement relocated = locator.FindByLabel(fieldLabel, preferredTag: "input");
+                string actualValue = relocated.GetAttribute("value") ?? string.Empty;
+                string actualId = relocated.GetAttribute("id") ?? string.Empty;
+
+                bool passed = actualValue == fingerprint && actualId == newId;
+                results.Record(testName, passed,
+                    passed
+                        ? $"After removing the original label, randomizing id/name/class (new id '{newId}'), and moving the element into a brand-new <div> at the end of <body>, " +
+                          $"FindByLabel('{fieldLabel}') still resolved to the SAME element (fingerprint '{fingerprint}' confirmed intact)."
+                        : $"Post-mutation re-locate did not match the original element (expected value '{fingerprint}' at id '{newId}', " +
+                          $"got value '{actualValue}' at id '{actualId}').");
+            }
+            catch (Exception ex)
+            {
+                results.Record(testName, false, $"Resilience demo failed: {ex.Message}");
             }
         }
     }
